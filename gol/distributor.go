@@ -211,6 +211,39 @@ func AliveCells(world [][]byte, width, height int) []util.Cell {
 	return cells
 }
 
+
+//computes next-state for rows
+func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult) {
+	width := p.ImageWidth
+	height := p.ImageHeight
+
+
+	for job := range jobs {
+		start := job.startY
+		end := job.endY
+		world := job.world
+
+		length := end - start
+		// allocate a slice for one thread for what rows it needs ot compute
+		AllocatedSection := make([][]byte, length)
+		for row := range AllocatedSection {
+			AllocatedSection[row] = make([]byte, width)
+		}
+
+		// loop through each row for each thread
+		for y:= start; y < end; y ++ {
+			// calculateNextState?
+		}
+
+		results <- // idk smth here
+	}
+
+
+}
+
+
+
+
 func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult) {
 
 }
