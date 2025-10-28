@@ -158,6 +158,20 @@ func distributor(p Params, c distributorChannels) {
 	done <- true
 	ticker.Stop()
 
+	// Write final world to output file (PGM)
+	// Construct the output filename in the required format
+	// Example: "512x512x100" for a 512x512 world after 100 turns
+	outFileName := fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, p.Turns)
+	c.ioCommand <- ioOutput     // telling the i/o goroutine that we are starting an output operation
+	c.ioFilename <- outFileName // sending the filename to io goroutine
+
+	for y := 0; y < p.ImageHeight; y++ {
+		for x := 0; x < p.ImageWidth; x++ {
+			//writing the pixel value to the ioOutput channel
+			c.ioOutput <- world[y][x] //grayscale value for that pixel (0 or 255)
+		}
+	}
+
 	// TODO: Report the final state using FinalTurnCompleteEvent.
 	alive_cells := AliveCells(world, p.ImageWidth, p.ImageHeight)
 	c.events <- FinalTurnComplete{
