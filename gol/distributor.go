@@ -1,6 +1,10 @@
 package gol
 
-import "uk.ac.bris.cs/gameoflife/util"
+import (
+	"fmt"
+
+	"uk.ac.bris.cs/gameoflife/util"
+)
 
 type distributorChannels struct {
 	events     chan<- Event
@@ -16,6 +20,10 @@ func distributor(p Params, c distributorChannels) {
 
 	// TODO: Create a 2D slice to store the world.
 
+	filename := fmt.Sprintf("%dx%d", p.ImageWidth, p.ImageHeight)
+	c.ioCommand <- ioInput
+	c.ioFilename <- filename
+
 	world := make([][]byte, p.ImageHeight)
 	for y := 0; y < p.ImageHeight; y++ {
 		world[y] = make([]byte, p.ImageWidth)
@@ -28,7 +36,7 @@ func distributor(p Params, c distributorChannels) {
 	c.events <- StateChange{turn, Executing}
 
 	// TODO: Execute all turns of the Game of Life.
-	for turn := 0; turn < p.Turns; turn++ {
+	for turn = 0; turn < p.Turns; turn++ {
 		world = calculateNextStates(p, world)
 	}
 
