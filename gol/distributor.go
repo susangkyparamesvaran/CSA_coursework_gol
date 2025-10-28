@@ -34,7 +34,7 @@ type section struct {
 }
 
 // distributor divides the work between workers and interacts with other goroutines.
-func distributor(p Params, c distributorChannels) {
+func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 
 	// TODO: Create a 2D slice to store the world.
 
@@ -107,10 +107,45 @@ func distributor(p Params, c distributorChannels) {
 	// TODO: Execute all turns of the Game of Life.
 	sections := assignSections(p.ImageHeight, p.Threads)
 
-	for turn = 0; turn < p.Turns; turn++ {
-		// world = calculateNextStates(p, world)
+	//----------------------------------------------------------------------------------------------------------//
+	//----------------------------------------------------------------------------------------------------------//
 
-		// send one job per section
+	// variables for step 5
+	paused := false
+	quitting := false
+
+	for {
+		select {
+		case key := <-keypress:
+			switch key {
+			case 'p':
+				if !paused {
+					paused = true
+					c.events <- StateChange{turn, Paused}
+				} else {
+					paused = false
+					c.events <- StateChange{turn, Executing}
+				}
+			case 's':
+				saveImage(p, c, world, turn)
+			case 'q':
+				quitting = true
+			}
+			continue
+		default:
+		}
+
+		// quit if acc finished and not paused
+		if quitting || (turn >= p.Turns && !paused) {
+			break
+		}
+
+		if paused {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		//send one job per section
 		for _, job := range sections {
 			jobChan <- workerJob{
 				startY: job.start,
@@ -167,26 +202,27 @@ func distributor(p Params, c distributorChannels) {
 		c.events <- TurnComplete{
 			CompletedTurns: turn + 1,
 		}
+
+		turn++ //advance turn
 	}
 
-	// Stop ticker after finishing all turns
+	//Stop ticker after finishing all turns
 	done <- true
 	ticker.Stop()
 
 	// TODO: Report the final state using FinalTurnCompleteEvent.
 	aliveCells := AliveCells(world, p.ImageWidth, p.ImageHeight)
-	c.events <- FinalTurnComplete{CompletedTurns: p.Turns, Alive: aliveCells}
+	c.events <- FinalTurnComplete{CompletedTurns: turn, Alive: aliveCells}
 
-	// save final output
-	saveImage(p, c, world, p.Turns)
-
+	//save final output
+	saveImage(p, c, world, turn)
 	c.events <- StateChange{turn, Quitting}
 
-	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
+	//Close the channels to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(c.events)
-
-	// need to rmemebr to close job channel
 	close(jobChan)
+	return
+
 }
 
 func calculateNextStates(p Params, world [][]byte, startY, endY int) [][]byte {
@@ -291,17 +327,12 @@ func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult
 	}
 }
 
-// helper function to handle pauses
-func handlePause(keypress <-chan rune, c distributorChannels, world [][]byte, turn int, paused *bool) {
-
-}
-
 // helper function to handle image saves
 func saveImage(p Params, c distributorChannels, world [][]byte, turn int) {
 	// Write final world to output file (PGM)
 	// Construct the output filename in the required format
 	// Example: "512x512x100" for a 512x512 world after 100 turns
-	outFileName := fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, p.Turns)
+	outFileName := fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, turn)
 	c.ioCommand <- ioOutput     // telling the i/o goroutine that we are starting an output operation
 	c.ioFilename <- outFileName // sending the filename to io goroutine
 
@@ -354,4 +385,3 @@ func assignSections(height, threads int) []section {
 	}
 	return sections
 }
-
