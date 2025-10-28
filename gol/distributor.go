@@ -54,39 +54,9 @@ func distributor(p Params, c distributorChannels) {
 	jobChan := make(chan workerJob)
 	resultChan := make(chan workerResult)
 
-	// say if we had 16 rows and 4 threads
-	// we want to be able to allocate say 4 rows to 1 thread, 4 to the other thread etc.
-	workers := p.Threads
-
 	// for each worker
-	for i := 0; i < workers; i++ {
+	for i := 0; i < p.Threads; i++ {
 		go worker(i, p, jobChan, resultChan)
-	}
-
-	// we need to calculate the minimum number of rows for each worker
-	minRows := p.ImageHeight / p.Threads
-	// then say if we have extra rows left over then we need to assign those evenly to each worker
-	extraRows := p.ImageHeight % p.Threads
-
-	// make a slice, the size of the number of threads
-	sections := make([]section, workers)
-	start := 0
-
-	for i := 0; i < workers; i++ {
-		// assigns the base amount of rows to the thread
-		rows := minRows
-		// if say we're on worker 2 and there are 3 extra rows left,
-		// then we can add 1 more job to the thread
-		if i < extraRows {
-			rows++
-		}
-
-		// marks where the end of the section ends
-		end := start + rows
-		// assigns these rows to the section
-		sections[i] = section{start: start, end: end}
-		// start is updated for the next worker
-		start = end
 	}
 
 	// Start ticker to report alive cells every 2 seconds
@@ -127,6 +97,8 @@ func distributor(p Params, c distributorChannels) {
 	// such that there is one job from eahc section for each thread
 	// needs to gather the results and then put them together for the newstate of world
 	// TODO: Execute all turns of the Game of Life.
+	sections := assignSections(p.ImageHeight, p.Threads)
+
 	for turn = 0; turn < p.Turns; turn++ {
 		// world = calculateNextStates(p, world)
 
@@ -140,25 +112,18 @@ func distributor(p Params, c distributorChannels) {
 		}
 
 		// collect all the resuts and put them into the new state of world
-		results := make([]workerResult, 0, workers)
-		for i := 0; i < workers; i++ {
+		results := make([]workerResult, 0, p.Threads)
+		for i := 0; i < p.Threads; i++ {
 			results = append(results, <-resultChan)
-		}
-
-		// new world state
-		newWorld := make([][]byte, p.ImageHeight)
-		for i := range newWorld {
-			newWorld[i] = make([]byte, p.ImageWidth)
 		}
 
 		for _, result := range results {
 			start := result.startY
 			for row := 0; row < len(result.worldSection); row++ {
-				newWorld[start+row] = result.worldSection[row]
+				world[start+row] = result.worldSection[row]
 			}
 		}
 
-		world = newWorld
 	}
 
 	// Stop ticker after finishing all turns
@@ -166,29 +131,11 @@ func distributor(p Params, c distributorChannels) {
 	ticker.Stop()
 
 	// TODO: Report the final state using FinalTurnCompleteEvent.
-	alive_cells := AliveCells(world, p.ImageWidth, p.ImageHeight)
-	c.events <- FinalTurnComplete{
-		CompletedTurns: p.Turns,
-		Alive:          alive_cells,
-	}
+	aliveCells := AliveCells(world, p.ImageWidth, p.ImageHeight)
+	c.events <- FinalTurnComplete{CompletedTurns: p.Turns, Alive: aliveCells}
 
-	// Write final world to output file (PGM)
-	// Construct the output filename in the required format
-	// Example: "512x512x100" for a 512x512 world after 100 turns
-	outFileName := fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, p.Turns)
-	c.ioCommand <- ioOutput     // telling the i/o goroutine that we are starting an output operation
-	c.ioFilename <- outFileName // sending the filename to io goroutine
-
-	for y := 0; y < p.ImageHeight; y++ {
-		for x := 0; x < p.ImageWidth; x++ {
-			//writing the pixel value to the ioOutput channel
-			c.ioOutput <- world[y][x] //grayscale value for that pixel (0 or 255)
-		}
-	}
-
-	// Make sure that the Io has finished any output before exiting.
-	c.ioCommand <- ioCheckIdle
-	<-c.ioIdle
+	// save final output
+	saveImage(p, c, world, p.Turns)
 
 	c.events <- StateChange{turn, Quitting}
 
@@ -289,7 +236,7 @@ func AliveCells(world [][]byte, width, height int) []util.Cell {
 	return cells
 }
 
-// applies nextState function on particular section
+// worker goroutine
 func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult) {
 	for job := range jobs {
 		outputSection := calculateNextStates(p, job.world, job.startY, job.endY)
@@ -299,4 +246,68 @@ func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult
 			worldSection: outputSection,
 		}
 	}
+}
+
+// helper function to handle pauses
+func handlePause(keypress <-chan rune, c distributorChannels, world [][]byte, turn int, paused *bool) {
+
+}
+
+// helper function to handle image saves
+func saveImage(p Params, c distributorChannels, world [][]byte, turn int) {
+	// Write final world to output file (PGM)
+	// Construct the output filename in the required format
+	// Example: "512x512x100" for a 512x512 world after 100 turns
+	outFileName := fmt.Sprintf("%dx%dx%d", p.ImageWidth, p.ImageHeight, p.Turns)
+	c.ioCommand <- ioOutput     // telling the i/o goroutine that we are starting an output operation
+	c.ioFilename <- outFileName // sending the filename to io goroutine
+
+	for y := 0; y < p.ImageHeight; y++ {
+		for x := 0; x < p.ImageWidth; x++ {
+			//writing the pixel value to the ioOutput channel
+			c.ioOutput <- world[y][x] //grayscale value for that pixel (0 or 255)
+		}
+	}
+
+	// Make sure that the Io has finished any output before exiting.
+	c.ioCommand <- ioCheckIdle
+	<-c.ioIdle
+
+	// once saved, notify the SDL event system (important for Step 5)
+	c.events <- ImageOutputComplete{CompletedTurns: turn, Filename: outFileName}
+
+}
+
+// helper func to assign sections of image to workers based on no. of threads
+func assignSections(height, threads int) []section {
+	// say if we had 16 rows and 4 threads
+	// we want to be able to allocate say 4 rows to 1 thread, 4 to the other thread etc.
+	workers := threads
+
+	// we need to calculate the minimum number of rows for each worker
+	minRows := height / threads
+	// then say if we have extra rows left over then we need to assign those evenly to each worker
+	extraRows := height % threads
+
+	// make a slice, the size of the number of threads
+	sections := make([]section, workers)
+	start := 0
+
+	for i := 0; i < workers; i++ {
+		// assigns the base amount of rows to the thread
+		rows := minRows
+		// if say we're on worker 2 and there are 3 extra rows left,
+		// then we can add 1 more job to the thread
+		if i < extraRows {
+			rows++
+		}
+
+		// marks where the end of the section ends
+		end := start + rows
+		// assigns these rows to the section
+		sections[i] = section{start: start, end: end}
+		// start is updated for the next worker
+		start = end
+	}
+	return sections
 }
