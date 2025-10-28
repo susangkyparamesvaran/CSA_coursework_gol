@@ -90,6 +90,14 @@ func distributor(p Params, c distributorChannels) {
 			}
 		}
 	}()
+	
+	// calculates which cells are alive in the inital state before a turn has been made
+	initialAlive := AliveCells(world, p.ImageWidth, p.ImageHeight)
+	if len(initialAlive) > 0 {
+		c.events <- CellsFlipped{
+			CompletedTurns: 0,
+			Cells:          initialAlive}
+	}
 
 	c.events <- StateChange{turn, Executing}
 
@@ -117,13 +125,34 @@ func distributor(p Params, c distributorChannels) {
 			results = append(results, <-resultChan)
 		}
 
+		// new world state
+		newWorld := make([][]byte, p.ImageHeight)
+		for i := range newWorld {
+			newWorld[i] = make([]byte, p.ImageWidth)
+		}
+
 		for _, result := range results {
 			start := result.startY
 			for row := 0; row < len(result.worldSection); row++ {
-				world[start+row] = result.worldSection[row]
+				newWorld[start+row] = result.worldSection[row]
 			}
 		}
 
+		// if there is at least one cell thats been flipped then we need to return the
+		// Cells Flipped event
+		if len(flippedCells) > 0 {
+			c.events <- CellsFlipped{
+				CompletedTurns: turn + 1,
+				Cells:          flippedCells}
+		}
+
+		world = newWorld
+
+		///// STEP 6 TURN COMPLETE///////////
+		// At the end of each turn we need to signal that a turn is completed
+		c.events <- TurnComplete{
+			CompletedTurns: turn + 1,
+		}
 	}
 
 	// Stop ticker after finishing all turns
