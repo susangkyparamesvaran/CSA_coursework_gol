@@ -81,6 +81,17 @@ func distributor(p Params, c distributorChannels) {
 	turn := 0
 	c.events <- StateChange{turn, Executing}
 
+	// Number of workers based on threads
+	// splitting the world by rows, so we need to think about threads > height (empty threads)
+	workers := p.Threads
+	if (workers <= 1) {
+		workers = 1
+	}
+
+	if (workers > p.ImageHeight) {
+		workers = p.ImageHeight 
+	}
+
 	//starting goroutines
 	for i := 0; i < p.Threads; i++ {
 		go worker(i, p, jobChan, resultChan)
