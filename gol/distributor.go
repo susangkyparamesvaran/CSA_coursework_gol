@@ -158,6 +158,13 @@ func distributor(p Params, c distributorChannels) {
 	done <- true
 	ticker.Stop()
 
+	// TODO: Report the final state using FinalTurnCompleteEvent.
+	alive_cells := AliveCells(world, p.ImageWidth, p.ImageHeight)
+	c.events <- FinalTurnComplete{
+		CompletedTurns: p.Turns,
+		Alive:          alive_cells,
+	}
+
 	// Write final world to output file (PGM)
 	// Construct the output filename in the required format
 	// Example: "512x512x100" for a 512x512 world after 100 turns
@@ -170,13 +177,6 @@ func distributor(p Params, c distributorChannels) {
 			//writing the pixel value to the ioOutput channel
 			c.ioOutput <- world[y][x] //grayscale value for that pixel (0 or 255)
 		}
-	}
-
-	// TODO: Report the final state using FinalTurnCompleteEvent.
-	alive_cells := AliveCells(world, p.ImageWidth, p.ImageHeight)
-	c.events <- FinalTurnComplete{
-		CompletedTurns: p.Turns,
-		Alive:          alive_cells,
 	}
 
 	// Make sure that the Io has finished any output before exiting.
@@ -292,5 +292,6 @@ func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult
 		}
 	}
 }
+
 
 
