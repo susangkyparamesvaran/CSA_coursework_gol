@@ -39,6 +39,7 @@ func distributor(p Params, c distributorChannels) {
 	close(c.events)
 }
 
+<<<<<<< HEAD
 func calculateNextStates(p Params, world [][]byte) [][]byte {
 	h := p.ImageHeight //h rows
 	w := p.ImageWidth  //w columns
@@ -113,4 +114,21 @@ func calculateNextStates(p Params, world [][]byte) [][]byte {
 		}
 	}
 	return newWorld
+=======
+func countAliveCells(world [][]byte, x, y, width, height int) int {
+	count := 0
+	for dy := -1; dy <= 1; dy++ {
+		for dx := -1; dx <= 1; dx++ {
+			if dx == 0 && dy == 0 {
+				continue
+			}
+			nx := (x + dx + width) % width
+			ny := (y + dy + height) % height
+			if world[ny][nx] == 255 {
+				count++
+			}
+		}
+	}
+	return count
+>>>>>>> origin/master
 }
