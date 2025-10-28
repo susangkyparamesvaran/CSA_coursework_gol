@@ -90,7 +90,7 @@ func distributor(p Params, c distributorChannels) {
 			}
 		}
 	}()
-	
+
 	// calculates which cells are alive in the inital state before a turn has been made
 	initialAlive := AliveCells(world, p.ImageWidth, p.ImageHeight)
 	if len(initialAlive) > 0 {
@@ -135,6 +135,20 @@ func distributor(p Params, c distributorChannels) {
 			start := result.startY
 			for row := 0; row < len(result.worldSection); row++ {
 				newWorld[start+row] = result.worldSection[row]
+			}
+		}
+
+		///// STEP 6 CELLS FLIPPED///////////
+		// At the end of each turn, put all changed coordinates into a slice,
+		// and then send CellsFlipped event
+		// make a slice so as to compare the old row and the new row of the world
+		flippedCells := make([]util.Cell, 0)
+		// go row by row, then column by column
+		for y := 0; y < p.ImageHeight; y++ {
+			for x := 0; x < p.ImageWidth; x++ {
+				if world[y][x] != newWorld[y][x] {
+					flippedCells = append(flippedCells, util.Cell{X: x, Y: y})
+				}
 			}
 		}
 
@@ -340,3 +354,4 @@ func assignSections(height, threads int) []section {
 	}
 	return sections
 }
+
