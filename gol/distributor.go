@@ -38,3 +38,20 @@ func distributor(p Params, c distributorChannels) {
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(c.events)
 }
+
+func countAliveCells(world [][]byte, x, y, width, height int) int {
+	count := 0
+	for dy := -1; dy <= 1; dy++ {
+		for dx := -1; dx <= 1; dx++ {
+			if dx == 0 && dy == 0 {
+				continue
+			}
+			nx := (x + dx + width) % width
+			ny := (y + dy + height) % height
+			if world[ny][nx] == 255 {
+				count++
+			}
+		}
+	}
+	return count
+}
