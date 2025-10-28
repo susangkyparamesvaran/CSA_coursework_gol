@@ -14,6 +14,14 @@ func distributor(p Params, c distributorChannels) {
 
 	// TODO: Create a 2D slice to store the world.
 
+	world := make([][]byte, p.ImageHeight)
+	for y := 0; y < p.ImageHeight; y++ {
+		world[y] = make([]byte, p.ImageWidth)
+		for x := 0; x < p.ImageWidth; x++ {
+			world[y][x] = <-c.ioInput 
+		}
+	}
+
 	turn := 0
 	c.events <- StateChange{turn, Executing}
 
