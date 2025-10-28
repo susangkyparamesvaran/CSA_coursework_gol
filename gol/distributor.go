@@ -15,6 +15,18 @@ type distributorChannels struct {
 	ioInput    <-chan uint8
 }
 
+// structs for our channels used to communicate with the worker goroutine
+type workerJob struct {
+	startY int
+	endY   int
+	world  [][]byte
+}
+
+type workerResult struct {
+	ID           int
+	worldSection [][]byte
+}
+
 // distributor divides the work between workers and interacts with other goroutines.
 func distributor(p Params, c distributorChannels) {
 
@@ -32,8 +44,17 @@ func distributor(p Params, c distributorChannels) {
 		}
 	}
 
+	// Channels to send work and receive results
+	jobChan := make(chan workerJob)
+	resultChan := make(chan workerResult)
+
 	turn := 0
 	c.events <- StateChange{turn, Executing}
+
+	//starting goroutines
+	for i := 0; i < p.Threads; i++ {
+		go worker(i, p, jobChan, resultChan)
+	}
 
 	// TODO: Execute all turns of the Game of Life.
 	for turn = 0; turn < p.Turns; turn++ {
@@ -143,4 +164,8 @@ func AliveCells(world [][]byte, width, height int) []util.Cell {
 		}
 	}
 	return cells
+}
+
+func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult) {
+
 }
