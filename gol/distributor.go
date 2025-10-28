@@ -145,13 +145,20 @@ func distributor(p Params, c distributorChannels) {
 			results = append(results, <-resultChan)
 		}
 
+		// new world state
+		newWorld := make([][]byte, p.ImageHeight)
+		for i := range newWorld {
+			newWorld[i] = make([]byte, p.ImageWidth)
+		}
+
 		for _, result := range results {
 			start := result.startY
 			for row := 0; row < len(result.worldSection); row++ {
-				world[start+row] = result.worldSection[row]
+				newWorld[start+row] = result.worldSection[row]
 			}
 		}
 
+		world = newWorld
 	}
 
 	// Stop ticker after finishing all turns
@@ -282,6 +289,7 @@ func AliveCells(world [][]byte, width, height int) []util.Cell {
 	return cells
 }
 
+// applies nextState function on particular section
 func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult) {
 	for job := range jobs {
 		outputSection := calculateNextStates(p, job.world, job.startY, job.endY)
@@ -292,6 +300,3 @@ func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult
 		}
 	}
 }
-
-
-
