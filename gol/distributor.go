@@ -81,16 +81,39 @@ func distributor(p Params, c distributorChannels) {
 	turn := 0
 	c.events <- StateChange{turn, Executing}
 
-	// Number of workers based on threads
-	// splitting the world by rows, so we need to think about threads > height (empty threads)
+	/////// CHECK THIS PART  /////////////////
+	// Assigning rows to each worker evenly
+	// say if we had 16 rows and 4 threads
+	// we want to be able to allocate say 4 rows to 1 thread, 4 to the other thread etc.
 	workers := p.Threads
-	if (workers <= 1) {
-		workers = 1
+
+	// we need to calculate the minimum number of rows for each worker
+	minRows := p.ImageHeight / p.Threads
+	// then say if we have extra rows left over then we need to assign those evenly to each worker
+	extraRows := p.ImageHeight % p.Threads
+	
+	// make a slice, the size of the number of threads
+	sections := make([]section, workers)
+	start := 0
+	// for each worker
+	for i := 0; i < workers; i ++ {
+		// assigns the base amount of rows to the thread
+		rows := minRows
+		// if say we're on worker 2 and there are 3 extra rows left, 
+		// then we can add 1 more job to the thread
+		if i < extraRows {
+			rows ++
+		}
+
+		// marks where the end of the section ends
+		end := start + rows
+		// assigns these rows to the section
+		sections[i] = section{start : start, end : end}
+		// start is updated for the next worker
+		start = end
 	}
 
-	if (workers > p.ImageHeight) {
-		workers = p.ImageHeight 
-	}
+	/////////////////////////////////////////////////////////////////////
 
 	//starting goroutines
 	for i := 0; i < p.Threads; i++ {
@@ -226,7 +249,6 @@ func AliveCells(world [][]byte, width, height int) []util.Cell {
 }
 
 
-//computes next-state for rows
 func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult) {
 	width := p.ImageWidth
 	height := p.ImageHeight
