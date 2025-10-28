@@ -1,5 +1,7 @@
 package gol
 
+import "uk.ac.bris.cs/gameoflife/util"
+
 type distributorChannels struct {
 	events     chan<- Event
 	ioCommand  chan<- ioCommand
@@ -26,8 +28,16 @@ func distributor(p Params, c distributorChannels) {
 	c.events <- StateChange{turn, Executing}
 
 	// TODO: Execute all turns of the Game of Life.
+	for turn := 0; turn < p.Turns; turn++ {
+		world = calculateNextStates(p, world)
+	}
 
 	// TODO: Report the final state using FinalTurnCompleteEvent.
+	alive_cells := AliveCells(world, p.ImageWidth, p.ImageHeight)
+	c.events <- FinalTurnComplete{
+		CompletedTurns: p.Turns,
+		Alive:          alive_cells,
+	}
 
 	// Make sure that the Io has finished any output before exiting.
 	c.ioCommand <- ioCheckIdle
@@ -115,4 +125,14 @@ func calculateNextStates(p Params, world [][]byte) [][]byte {
 	return newWorld
 }
 
-
+func AliveCells(world [][]byte, width, height int) []util.Cell {
+	cells := make([]util.Cell, 0)
+	for dy := 0; dy < height; dy++ {
+		for dx := 0; dx < width; dx++ {
+			if world[dy][dx] == 255 {
+				cells = append(cells, util.Cell{X: dx, Y: dy})
+			}
+		}
+	}
+	return cells
+}
