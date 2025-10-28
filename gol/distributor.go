@@ -27,6 +27,10 @@ type workerResult struct {
 	worldSection [][]byte
 }
 
+type section struct{ 
+	start, end int 
+}
+
 // distributor divides the work between workers and interacts with other goroutines.
 func distributor(p Params, c distributorChannels) {
 
