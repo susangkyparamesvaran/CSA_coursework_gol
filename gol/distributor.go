@@ -115,23 +115,4 @@ func calculateNextStates(p Params, world [][]byte) [][]byte {
 	return newWorld
 }
 
-func countAliveCells(world [][]byte, x, y, width, height int) int {
-	count := 0 //store num of alive neighbours
-	// loops over vertical neighbors : dy is the vertical offset from the current cell
-	// -1 = above, 0 = same, 1 = below
-	for dy := -1; dy <= 1; dy++ {
-		for dx := -1; dx <= 1; dx++ {
-			if dx == 0 && dy == 0 {
-				// if (dx, dy) = (0,0), which is current cell, we skip the cell
-				continue
-			}
-			nx := (x + dx + width) % width
-			ny := (y + dy + height) % height
-			//wrapping done to ensure all neighbours exist and avoids out-of-range errors
-			if world[ny][nx] == 255 {
-				count++
-			}
-		}
-	}
-	return count
-}
+
