@@ -48,6 +48,36 @@ func distributor(p Params, c distributorChannels) {
 	jobChan := make(chan workerJob)
 	resultChan := make(chan workerResult)
 
+	// Start ticker to report alive cells every 2 seconds
+	ticker := time.NewTicker(2 * time.Second)
+	//Channel used to sognal the goroutine to stop
+	done := make(chan bool)
+
+	go func() {
+		for {
+			select {
+			// Case runs every time the timer ticks (every 2 seconds)
+			case <-ticker.C:
+				aliveCount := 0
+
+				//loop to count alive cells
+				for y := 0; y < p.ImageHeight; y++ {
+					for x := 0; x < p.ImageWidth; x++ {
+						if world[y][x] == 255 {
+							aliveCount++
+						}
+					}
+				}
+				c.events <- AliveCellsCount{
+					CompletedTurns: turn,
+					CellsCount:     aliveCount,
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+
 	turn := 0
 	c.events <- StateChange{turn, Executing}
 
@@ -60,6 +90,10 @@ func distributor(p Params, c distributorChannels) {
 	for turn = 0; turn < p.Turns; turn++ {
 		world = calculateNextStates(p, world)
 	}
+
+	// Stop ticker after finishing all turns
+	done <- true
+	ticker.Stop()
 
 	// TODO: Report the final state using FinalTurnCompleteEvent.
 	alive_cells := AliveCells(world, p.ImageWidth, p.ImageHeight)
