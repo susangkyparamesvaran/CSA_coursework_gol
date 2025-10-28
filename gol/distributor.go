@@ -18,7 +18,7 @@ func distributor(p Params, c distributorChannels) {
 	for y := 0; y < p.ImageHeight; y++ {
 		world[y] = make([]byte, p.ImageWidth)
 		for x := 0; x < p.ImageWidth; x++ {
-			world[y][x] = <-c.ioInput 
+			world[y][x] = <-c.ioInput
 		}
 	}
 
@@ -37,4 +37,80 @@ func distributor(p Params, c distributorChannels) {
 
 	// Close the channel to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(c.events)
+}
+
+func calculateNextStates(p Params, world [][]byte) [][]byte {
+	h := p.ImageHeight //h rows
+	w := p.ImageWidth  //w columns
+
+	//make new grid
+	newWorld := make([][]byte, h)
+	for i := 0; i < h; i++ {
+		newWorld[i] = make([]byte, w)
+	}
+
+	for i := 0; i < h; i++ {
+		for j := 0; j < w; j++ { //accessing each individual cell
+			count := 0
+			up := (i - 1 + h) % h
+			down := (i + 1) % h
+			left := (j - 1 + w) % w
+			right := (j + 1) % w
+
+			//need to check all it's neighbors and state of it's cell
+			leftCell := world[i][left]
+			if leftCell == 255 {
+				count += 1
+			}
+			rightCell := world[i][right]
+			if rightCell == 255 {
+				count += 1
+			}
+			upCell := world[up][j]
+			if upCell == 255 {
+				count += 1
+			}
+			downCell := world[down][j]
+			if downCell == 255 {
+				count += 1
+			}
+			upRightCell := world[up][right]
+			if upRightCell == 255 {
+				count += 1
+			}
+			upLeftCell := world[up][left]
+			if upLeftCell == 255 {
+				count += 1
+			}
+
+			downRightCell := world[down][right]
+			if downRightCell == 255 {
+				count += 1
+			}
+
+			downLeftCell := world[down][left]
+			if downLeftCell == 255 {
+				count += 1
+			}
+
+			//update the cells
+			if world[i][j] == 255 {
+				if count == 2 || count == 3 {
+					newWorld[i][j] = 255
+				} else {
+					newWorld[i][j] = 0
+				}
+			}
+
+			if world[i][j] == 0 {
+				if count == 3 {
+					newWorld[i][j] = 255
+				} else {
+					newWorld[i][j] = 0
+				}
+			}
+
+		}
+	}
+	return newWorld
 }
