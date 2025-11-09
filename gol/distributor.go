@@ -2,7 +2,7 @@ package gol
 
 import (
 	"fmt"
-	"net/rpc"
+	"sync"
 	"time"
 
 	"uk.ac.bris.cs/gameoflife/util"
@@ -17,14 +17,21 @@ type distributorChannels struct {
 	ioInput    <-chan uint8
 }
 
-type WorkerRequest struct {
-	Params Params
-	World  [][]byte
+// structs for our channels used to communicate with the worker goroutine
+type workerJob struct {
+	startY int
+	endY   int
+	world  [][]byte
 }
 
-type WorkerResponse struct {
-	World [][]byte
-	Alive []util.Cell
+type workerResult struct {
+	ID           int
+	startY       int
+	worldSection [][]byte
+}
+
+type section struct {
+	start, end int
 }
 
 // distributor divides the work between workers and interacts with other goroutines.
@@ -44,6 +51,19 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 		}
 	}
 
+	/* MUTEX INITIALISED*/
+	var worldMutex sync.RWMutex
+	var turnMu sync.RWMutex
+
+	// Channels to send work and receive results
+	jobChan := make(chan workerJob)
+	resultChan := make(chan workerResult)
+
+	// for each worker
+	for i := 0; i < p.Threads; i++ {
+		go worker(i, p, jobChan, resultChan)
+	}
+
 	// Start ticker to report alive cells every 2 seconds
 	ticker := time.NewTicker(2 * time.Second)
 	//Channel used to sognal the goroutine to stop
@@ -58,6 +78,8 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 			case <-ticker.C:
 				aliveCount := 0
 
+				/* MUTEX ADDED */
+				worldMutex.RLock()
 				//loop to count alive cells
 				for y := 0; y < p.ImageHeight; y++ {
 					for x := 0; x < p.ImageWidth; x++ {
@@ -66,8 +88,15 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 						}
 					}
 				}
+				worldMutex.RUnlock()
+
+				/*MUTEX ADDED */
+				turnMu.RLock()
+				currentTurn := turn
+				turnMu.RUnlock()
+
 				c.events <- AliveCellsCount{
-					CompletedTurns: turn,
+					CompletedTurns: currentTurn,
 					CellsCount:     aliveCount,
 				}
 			case <-done:
@@ -90,6 +119,7 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	// such that there is one job from eahc section for each thread
 	// needs to gather the results and then put them together for the newstate of world
 	// TODO: Execute all turns of the Game of Life.
+	sections := assignSections(p.ImageHeight, p.Threads)
 
 	//----------------------------------------------------------------------------------------------------------//
 	//----------------------------------------------------------------------------------------------------------//
@@ -98,13 +128,6 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	paused := false
 	quitting := false
 
-	client, err := rpc.Dial("tcp", "98.93.77.210:8030") // your AWS public IP + port
-	if err != nil {
-		fmt.Println("Error connecting to worker:", err)
-		return
-	}
-	defer client.Close()
-
 	for {
 		select {
 		case key := <-keypress:
@@ -112,13 +135,24 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 			case 'p':
 				if !paused {
 					paused = true
+					//added mutex
+					turnMu.RLock()
 					c.events <- StateChange{turn, Paused}
+					turnMu.RUnlock()
 				} else {
 					paused = false
+					//added mutex
+					turnMu.RLock()
 					c.events <- StateChange{turn, Executing}
+					turnMu.RUnlock()
 				}
 			case 's':
+				/* MUTEX ADDED */
+				worldMutex.RLock()
+				turnMu.RLock()
 				saveImage(p, c, world, turn)
+				turnMu.RUnlock()
+				worldMutex.RUnlock()
 			case 'q':
 				quitting = true
 			}
@@ -126,8 +160,12 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 		default:
 		}
 
+		//added mutex
+		turnMu.RLock()
+		finished := turn >= p.Turns
+		turnMu.RUnlock()
 		// quit if acc finished and not paused
-		if quitting || (turn >= p.Turns && !paused) {
+		if quitting || (finished && !paused) {
 			break
 		}
 
@@ -136,18 +174,32 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 			continue
 		}
 
-		request := WorkerRequest{
-			Params: p,
-			World:  world,
+		//send one job per section
+		for _, job := range sections {
+			jobChan <- workerJob{
+				startY: job.start,
+				endY:   job.end,
+				world:  world,
+			}
 		}
 
-		var response WorkerResponse
+		// collect all the resuts and put them into the new state of world
+		results := make([]workerResult, 0, p.Threads)
+		for i := 0; i < p.Threads; i++ {
+			results = append(results, <-resultChan)
+		}
 
-		err = client.Call("GOLWorker.ProcessTurns", request, &response)
-		if err != nil {
-			fmt.Println("Error calling remote worker:", err)
-			quitting = true
-			continue
+		// new world state
+		newWorld := make([][]byte, p.ImageHeight)
+		for i := range newWorld {
+			newWorld[i] = make([]byte, p.ImageWidth)
+		}
+
+		for _, result := range results {
+			start := result.startY
+			for row := 0; row < len(result.worldSection); row++ {
+				newWorld[start+row] = result.worldSection[row]
+			}
 		}
 
 		///// STEP 6 CELLS FLIPPED///////////
@@ -155,50 +207,155 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 		// and then send CellsFlipped event
 		// make a slice so as to compare the old row and the new row of the world
 		flippedCells := make([]util.Cell, 0)
+
+		/* MUTEX ADDED */
+		worldMutex.RLock()
 		// go row by row, then column by column
 		for y := 0; y < p.ImageHeight; y++ {
 			for x := 0; x < p.ImageWidth; x++ {
-				if world[y][x] != response.World[y][x] {
+				if world[y][x] != newWorld[y][x] {
 					flippedCells = append(flippedCells, util.Cell{X: x, Y: y})
 				}
 			}
 		}
+		worldMutex.RUnlock()
 
 		// if there is at least one cell thats been flipped then we need to return the
 		// Cells Flipped event
 		if len(flippedCells) > 0 {
+			turnMu.RLock()
+			currentTurn := turn + 1
+			turnMu.RUnlock()
 			c.events <- CellsFlipped{
-				CompletedTurns: turn + 1,
+				CompletedTurns: currentTurn,
 				Cells:          flippedCells}
 		}
 
-		world = response.World
+		/* MUTEX ADDED */
+		worldMutex.Lock()
+		world = newWorld
+		worldMutex.Unlock()
+
+		turnMu.Lock()
+		turn++
+		currentTurn := turn
+		turnMu.Unlock()
 
 		///// STEP 6 TURN COMPLETE///////////
 		// At the end of each turn we need to signal that a turn is completed
 		c.events <- TurnComplete{
-			CompletedTurns: turn + 1,
+			CompletedTurns: currentTurn,
 		}
 
-		turn++ //advance turn
+		//turn++ //advance turn
 	}
 
 	//Stop ticker after finishing all turns
 	done <- true
 	ticker.Stop()
 
-	// TODO: Report the final state using FinalTurnCompleteEvent.
+	//added mutex
+	worldMutex.RLock()
 	aliveCells := AliveCells(world, p.ImageWidth, p.ImageHeight)
-	c.events <- FinalTurnComplete{CompletedTurns: turn, Alive: aliveCells}
+	worldMutex.RUnlock()
+
+	turnMu.RLock()
+	finalTurn := turn
+	turnMu.RUnlock()
+
+	// TODO: Report the final state using FinalTurnCompleteEvent.
+	c.events <- FinalTurnComplete{CompletedTurns: finalTurn, Alive: aliveCells}
 
 	//save final output
+	worldMutex.RLock()
 	saveImage(p, c, world, turn)
+	worldMutex.RUnlock()
+
 	c.events <- StateChange{turn, Quitting}
 
 	//Close the channels to stop the SDL goroutine gracefully. Removing may cause deadlock.
 	close(c.events)
+	close(jobChan)
 	return
 
+}
+
+func calculateNextStates(p Params, world [][]byte, startY, endY int) [][]byte {
+	h := p.ImageHeight //h rows
+	w := p.ImageWidth  //w columns
+
+	rows := endY - startY
+
+	//make new grid section
+	newRows := make([][]byte, rows)
+	for i := 0; i < rows; i++ {
+		newRows[i] = make([]byte, w)
+	}
+
+	for i := startY; i < endY; i++ {
+		for j := 0; j < w; j++ { //accessing each individual cell
+			count := 0
+			up := (i - 1 + h) % h
+			down := (i + 1) % h
+			left := (j - 1 + w) % w
+			right := (j + 1) % w
+
+			//need to check all it's neighbors and state of it's cell
+			leftCell := world[i][left]
+			if leftCell == 255 {
+				count += 1
+			}
+			rightCell := world[i][right]
+			if rightCell == 255 {
+				count += 1
+			}
+			upCell := world[up][j]
+			if upCell == 255 {
+				count += 1
+			}
+			downCell := world[down][j]
+			if downCell == 255 {
+				count += 1
+			}
+			upRightCell := world[up][right]
+			if upRightCell == 255 {
+				count += 1
+			}
+			upLeftCell := world[up][left]
+			if upLeftCell == 255 {
+				count += 1
+			}
+
+			downRightCell := world[down][right]
+			if downRightCell == 255 {
+				count += 1
+			}
+
+			downLeftCell := world[down][left]
+			if downLeftCell == 255 {
+				count += 1
+			}
+
+			//update the cells
+			if world[i][j] == 255 {
+				if count == 2 || count == 3 {
+					newRows[i-startY][j] = 255
+				} else {
+					newRows[i-startY][j] = 0
+				}
+			}
+
+			if world[i][j] == 0 {
+				if count == 3 {
+					newRows[i-startY][j] = 255
+				} else {
+					newRows[i-startY][j] = 0
+				}
+			}
+
+		}
+	}
+	return newRows
 }
 
 func AliveCells(world [][]byte, width, height int) []util.Cell {
@@ -211,6 +368,18 @@ func AliveCells(world [][]byte, width, height int) []util.Cell {
 		}
 	}
 	return cells
+}
+
+// worker goroutine
+func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult) {
+	for job := range jobs {
+		outputSection := calculateNextStates(p, job.world, job.startY, job.endY)
+		results <- workerResult{
+			ID:           id,
+			startY:       job.startY,
+			worldSection: outputSection,
+		}
+	}
 }
 
 // helper function to handle image saves
@@ -236,4 +405,38 @@ func saveImage(p Params, c distributorChannels, world [][]byte, turn int) {
 	// once saved, notify the SDL event system (important for Step 5)
 	c.events <- ImageOutputComplete{CompletedTurns: turn, Filename: outFileName}
 
+}
+
+// helper func to assign sections of image to workers based on no. of threads
+func assignSections(height, threads int) []section {
+	// say if we had 16 rows and 4 threads
+	// we want to be able to allocate say 4 rows to 1 thread, 4 to the other thread etc.
+	workers := threads
+
+	// we need to calculate the minimum number of rows for each worker
+	minRows := height / threads
+	// then say if we have extra rows left over then we need to assign those evenly to each worker
+	extraRows := height % threads
+
+	// make a slice, the size of the number of threads
+	sections := make([]section, workers)
+	start := 0
+
+	for i := 0; i < workers; i++ {
+		// assigns the base amount of rows to the thread
+		rows := minRows
+		// if say we're on worker 2 and there are 3 extra rows left,
+		// then we can add 1 more job to the thread
+		if i < extraRows {
+			rows++
+		}
+
+		// marks where the end of the section ends
+		end := start + rows
+		// assigns these rows to the section
+		sections[i] = section{start: start, end: end}
+		// start is updated for the next worker
+		start = end
+	}
+	return sections
 }
