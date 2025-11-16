@@ -2,10 +2,13 @@ package gol
 
 // Params provides the details of how to run the Game of Life and which image to load.
 type Params struct {
-	Turns       int
-	Threads     int
-	ImageWidth  int
-	ImageHeight int
+	Turns           int
+	Threads         int
+	ImageWidth      int
+	ImageHeight     int
+	Dynamic         bool
+	ChunksPerWorker int
+	UsePrecomputed  bool
 }
 
 /*
@@ -44,6 +47,10 @@ func Run(p Params, events chan<- Event, keyPresses <-chan rune) {
 		ioInput:    ioInput,
 	}
 
-	distributor(p, distributorChannels, keyPresses)
+	if p.Dynamic {
+		distributorDynamic(p, distributorChannels, keyPresses)
+	} else {
+		distributor(p, distributorChannels, keyPresses)
+	}
 
 }
