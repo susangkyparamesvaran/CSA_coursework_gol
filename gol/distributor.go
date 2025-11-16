@@ -134,12 +134,211 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	var worldMu sync.RWMutex
 	var turnMu sync.RWMutex
 
+	totalChunks := p.Threads * p.ChunksPerWorker
+	sections := assignChunks(p.ImageHeight, totalChunks)
+
 	jobChan := make(chan workerJob)
-	resultChan := make(chan workerResult)
+	resultChan := make(chan workerResult, len(sections))
 
 	for i := 0; i < p.Threads; i++ {
 		go worker(i, p, jobChan, resultChan)
 	}
+
+	// Starting the ticker goroutine for every 2 seconds
+	ticker := time.NewTicker(2 * time.Second)
+	done := make(chan bool)
+
+	turn := 0
+
+	// /////////////////////////////////////////////////////////////////////////
+	// TICKER GOROUTINE
+	// /////////////////////////////////////////////////////////////////////////
+
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				var count int
+				// Count alive cells safely
+				readLock(&worldMu, func() {
+					scanWorld(world, p.ImageWidth, p.ImageHeight,
+						func(_, _ int, alive bool) {
+							if alive {
+								count++
+							}
+						})
+				})
+
+				// Send AliveCellsCount event to SDL
+				c.events <- AliveCellsCount{
+					CompletedTurns: getTurn(&turnMu, &turn),
+					CellsCount:     count,
+				}
+
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	// Compute initial alive cells
+	initialAlive := make([]util.Cell, 0)
+	scanWorld(world, p.ImageWidth, p.ImageHeight, func(x, y int, alive bool) {
+		if alive {
+			initialAlive = append(initialAlive, util.Cell{X: x, Y: y})
+		}
+	})
+
+	if len(initialAlive) > 0 {
+		c.events <- CellsFlipped{CompletedTurns: 0, Cells: initialAlive}
+	}
+
+	// Notify SDL that execution has started
+	c.events <- StateChange{turn, Executing}
+
+	paused := false
+	quitting := false
+
+	// /////////////////////////////////////////////////////////////////////////
+	// MAIN LOOP
+	// /////////////////////////////////////////////////////////////////////////
+
+	for {
+		select {
+		//Checking for keypress
+		case key := <-keypress:
+			switch key {
+
+			case 'p':
+				paused = !paused
+				state := Paused
+				if !paused {
+					state = Executing
+				}
+				c.events <- StateChange{getTurn(&turnMu, &turn), state}
+
+			case 's':
+				readLock(&worldMu, func() {
+					saveImage(p, c, world, getTurn(&turnMu, &turn))
+				})
+
+			case 'q':
+				quitting = true
+			}
+			continue
+		default:
+		}
+
+		if quitting || (getTurn(&turnMu, &turn) >= p.Turns && !paused) {
+			break
+		}
+
+		if paused {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
+		// Each worker receives a chunk of rows
+		readLock(&worldMu, func() {
+			for _, s := range sections {
+				jobChan <- workerJob{startY: s.start, endY: s.end, world: world}
+			}
+		})
+
+		// Collecting worker results
+		results := make([]workerResult, 0, len(sections))
+		for i := 0; i < len(sections); i++ {
+			results = append(results, <-resultChan)
+		}
+
+		// Merging into the new world for the next turn
+		newWorld := make([][]byte, p.ImageHeight)
+		for i := range newWorld {
+			newWorld[i] = make([]byte, p.ImageWidth)
+		}
+
+		for _, r := range results {
+			for row := 0; row < len(r.worldSection); row++ {
+				newWorld[r.startY+row] = r.worldSection[row]
+			}
+		}
+
+		// Comparing old and new world
+		flipped := make([]util.Cell, 0)
+
+		readLock(&worldMu, func() {
+			scanWorld(world, p.ImageWidth, p.ImageHeight,
+				func(x, y int, _ bool) {
+					if world[y][x] != newWorld[y][x] {
+						flipped = append(flipped, util.Cell{X: x, Y: y})
+					}
+				})
+		})
+
+		if len(flipped) > 0 {
+			c.events <- CellsFlipped{
+				CompletedTurns: getTurn(&turnMu, &turn) + 1,
+				Cells:          flipped,
+			}
+		}
+
+		writeLock(&worldMu, func() {
+			world = newWorld
+		})
+
+		setTurn(&turnMu, &turn, getTurn(&turnMu, &turn)+1)
+
+		c.events <- TurnComplete{CompletedTurns: getTurn(&turnMu, &turn)}
+	}
+
+	// Stopping the ticker
+	done <- true
+	ticker.Stop()
+
+	var finalAlive []util.Cell
+	readLock(&worldMu, func() {
+		finalAlive = []util.Cell{}
+		scanWorld(world, p.ImageWidth, p.ImageHeight, func(x, y int, alive bool) {
+			if alive {
+				finalAlive = append(finalAlive, util.Cell{X: x, Y: y})
+			}
+		})
+	})
+
+	c.events <- FinalTurnComplete{
+		CompletedTurns: getTurn(&turnMu, &turn),
+		Alive:          finalAlive,
+	}
+
+	readLock(&worldMu, func() {
+		saveImage(p, c, world, getTurn(&turnMu, &turn))
+	})
+
+	c.events <- StateChange{getTurn(&turnMu, &turn), Quitting}
+
+	close(c.events)
+	close(jobChan)
+}
+
+func distributorDynamic(p Params, c distributorChannels, keypress <-chan rune) {
+
+	//Load the input world
+	filename := fmt.Sprintf("%dx%d", p.ImageWidth, p.ImageHeight)
+	c.ioCommand <- ioInput
+	c.ioFilename <- filename
+
+	// Read world into memory, builds a 2D world[][] array
+	world := make([][]byte, p.ImageHeight)
+	for y := 0; y < p.ImageHeight; y++ {
+		world[y] = make([]byte, p.ImageWidth)
+		for x := 0; x < p.ImageWidth; x++ {
+			world[y][x] = <-c.ioInput
+		}
+	}
+
+	// Initialising mutexes: worldMu protects the world, turnMu protects the turn counter
+	var worldMu sync.RWMutex
+	var turnMu sync.RWMutex
 
 	// Starting the ticker goroutine for every 2 seconds
 	ticker := time.NewTicker(2 * time.Second)
@@ -238,17 +437,36 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 		}
 
 		// Each worker receives a chunk of rows
+		resultChan := make(chan workerResult, len(sections))
+
 		readLock(&worldMu, func() {
 			for _, s := range sections {
-				jobChan <- workerJob{startY: s.start, endY: s.end, world: world}
+				//spawn goroutine here
+				go func(start, end int) {
+					var next [][]byte
+					if p.UsePrecomputed {
+						next = calculateNextStatesPrecomputed(p, world, start, end)
+					} else {
+						next = calculateNextStatesInline(p, world, start, end)
+					}
+
+					sectionRows := next
+					resultChan <- workerResult{
+						startY:       start,
+						worldSection: sectionRows,
+					}
+				}(s.start, s.end)
+
 			}
 		})
 
 		// Collecting worker results
-		results := make([]workerResult, 0, p.Threads)
-		for i := 0; i < p.Threads; i++ {
+		results := make([]workerResult, 0, len(sections))
+		for i := 0; i < len(sections); i++ {
 			results = append(results, <-resultChan)
 		}
+
+		close(resultChan)
 
 		// Merging into the new world for the next turn
 		newWorld := make([][]byte, p.ImageHeight)
@@ -316,7 +534,6 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	c.events <- StateChange{getTurn(&turnMu, &turn), Quitting}
 
 	close(c.events)
-	close(jobChan)
 }
 
 // /////////////////////////////////////////////////////////////////////////
@@ -326,16 +543,22 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 // Function run by each worker goroutine, forms the worker pool
 func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult) {
 	for job := range jobs {
+		var next [][]byte
+		if p.UsePrecomputed {
+			next = calculateNextStatesPrecomputed(p, job.world, job.startY, job.endY)
+		} else {
+			next = calculateNextStatesInline(p, job.world, job.startY, job.endY)
+		}
 		results <- workerResult{
 			ID:           id,
 			startY:       job.startY,
-			worldSection: calculateNextStates(p, job.world, job.startY, job.endY),
+			worldSection: next,
 		}
 	}
 }
 
 // Computes the next state of one horizontal section of GOL world
-func calculateNextStates(p Params, world [][]byte, startY, endY int) [][]byte {
+func calculateNextStatesPrecomputed(p Params, world [][]byte, startY, endY int) [][]byte {
 	h := p.ImageHeight
 	w := p.ImageWidth
 
@@ -350,6 +573,61 @@ func calculateNextStates(p Params, world [][]byte, startY, endY int) [][]byte {
 		for x := 0; x < w; x++ {
 			n := countNeighbours(world, x, y, w, h)
 			newRows[y-startY][x] = nextCellState(world[y][x], n)
+		}
+	}
+
+	return newRows
+}
+
+func calculateNextStatesInline(p Params, world [][]byte, startY, endY int) [][]byte {
+	h := p.ImageHeight
+	w := p.ImageWidth
+
+	rows := endY - startY
+	newRows := make([][]byte, rows)
+	for i := 0; i < rows; i++ {
+		newRows[i] = make([]byte, w)
+	}
+
+	for i := startY; i < endY; i++ {
+		for j := 0; j < w; j++ {
+
+			// Wrap-around (branchy but cheaper than %)
+			up := i - 1
+			if up < 0 {
+				up = h - 1
+			}
+			down := i + 1
+			if down == h {
+				down = 0
+			}
+
+			left := j - 1
+			if left < 0 {
+				left = w - 1
+			}
+			right := j + 1
+			if right == w {
+				right = 0
+			}
+
+			row := world[i]
+			upRow := world[up]
+			downRow := world[down]
+
+			// Branchless neighbour count (0 or 1 per cell)
+			count := 0
+			count += int(row[left] >> 7)
+			count += int(row[right] >> 7)
+			count += int(upRow[j] >> 7)
+			count += int(downRow[j] >> 7)
+			count += int(upRow[left] >> 7)
+			count += int(upRow[right] >> 7)
+			count += int(downRow[left] >> 7)
+			count += int(downRow[right] >> 7)
+
+			// Use helper — cleaner + reduces branches
+			newRows[i-startY][j] = nextCellState(world[i][j], count)
 		}
 	}
 
@@ -395,3 +673,24 @@ func assignSections(height, threads int) []section {
 
 	return sections
 }
+
+func assignChunks(height, totalChunks int) []section {
+	minRowsPerChunk := height / totalChunks
+	extra := height % totalChunks
+
+	sections := make([]section, totalChunks)
+	start := 0
+
+	for i := 0; i < totalChunks; i++ {
+		rows := minRowsPerChunk
+		if i < extra {
+			rows++
+		}
+		end := start + rows
+		sections[i] = section{start, end}
+		start = end
+	}
+
+	return sections
+}
+
