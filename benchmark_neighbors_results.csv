@@ -1,0 +1,11 @@
+Mode,Threads,Time(s)
+PrecomputedOffsets,1,8.822
+PrecomputedOffsets,2,4.903
+PrecomputedOffsets,4,2.863
+PrecomputedOffsets,8,7.297
+PrecomputedOffsets,16,1.477
+InlineComputation,1,8.806
+InlineComputation,2,4.907
+InlineComputation,4,2.902
+InlineComputation,8,1.898
+InlineComputation,16,1.542

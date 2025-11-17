@@ -1,0 +1,11 @@
+Mode,Threads,Time(s)
+Persistent,1,8.873
+Persistent,2,4.934
+Persistent,4,9.553
+Persistent,8,1.913
+Persistent,16,1.497
+Dynamic,1,8.772
+Dynamic,2,4.978
+Dynamic,4,3.000
+Dynamic,8,2.150
+Dynamic,16,1.679

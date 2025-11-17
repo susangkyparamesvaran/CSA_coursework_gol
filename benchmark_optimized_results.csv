@@ -1,0 +1,10 @@
+Threads,Chunks,UsePrecomputed,Time(s)
+1,1,true,8.807
+2,1,true,4.899
+4,1,true,2.897
+8,1,true,1.882
+16,1,true,1.500
+8,2,false,1.189
+8,4,false,1.148
+16,2,false,1.157
+16,4,false,1.155
