@@ -270,7 +270,7 @@ func BenchmarkNeighbourCounting(b *testing.B) {
 				ImageHeight:     imageH,
 				Dynamic:         false, // persistent model
 				ChunksPerWorker: 1,
-				UsePrecomputed:  false,
+				UsePrecomputed:  mode.precompute,
 				UseOptimised:    false,
 			}
 
@@ -377,3 +377,4 @@ func BenchmarkOptimized(b *testing.B) {
 		}
 	}
 }
+
