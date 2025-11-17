@@ -1,17 +1,16 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-
+# --- Load CSV ---
 df = pd.read_csv("benchmark_granularity_results.csv")
 
-
+# --- Ensure numeric types and sort properly ---
 df["Threads"] = df["Threads"].astype(int)
 df["ChunksPerWorker"] = df["ChunksPerWorker"].astype(int)
 df["Time(s)"] = df["Time(s)"].astype(float)
 df = df.sort_values(["Threads", "ChunksPerWorker"])
 
-
-# Compute per-thread baseline (1 chunk per worker)
+# --- Compute per-thread baseline (1 chunk per worker) ---
 speedup_data = []
 for threads, subset in df.groupby("Threads"):
     subset = subset.sort_values("ChunksPerWorker").copy()
@@ -21,10 +20,10 @@ for threads, subset in df.groupby("Threads"):
 
 df_speedup = pd.concat(speedup_data, ignore_index=True)
 
-
+# --- Sanity print ---
 print(df_speedup[df_speedup["Threads"] == 16][["ChunksPerWorker", "Time(s)", "Speedup"]])
 
-# Plot
+# --- Plot ---
 plt.figure(figsize=(7, 5))
 for threads in sorted(df_speedup["Threads"].unique()):
     subset = df_speedup[df_speedup["Threads"] == threads]
