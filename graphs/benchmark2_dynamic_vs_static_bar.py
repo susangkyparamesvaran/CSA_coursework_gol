@@ -2,10 +2,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
-
+# --- Load CSV ---
 df = pd.read_csv("benchmark_dynamic_results.csv")
 
-# Split by mode
+# --- Split by mode ---
 persistent = df[df["Mode"] == "Persistent"]
 dynamic = df[df["Mode"] == "Dynamic"]
 
@@ -13,6 +13,7 @@ threads = persistent["Threads"]
 x = np.arange(len(threads))
 width = 0.35  # bar width
 
+# --- Create figure ---
 plt.figure(figsize=(7, 4.5))
 
 # Bars
@@ -21,13 +22,13 @@ bars1 = plt.bar(x - width/2, persistent["Time(s)"], width,
 bars2 = plt.bar(x + width/2, dynamic["Time(s)"], width,
                 label="Dynamic Workers", color="#F5A623")
 
-# Labels on each bar
+# --- Labels on each bar ---
 for bar in bars1 + bars2:
     yval = bar.get_height()
     plt.text(bar.get_x() + bar.get_width()/2, yval + 0.03,
              f"{yval:.2f}s", ha="center", va="bottom", fontsize=8)
 
-# Axes and title
+# --- Axes and title ---
 plt.title("Game of Life – Persistent vs Dynamic Worker Creation\n(512×512, 1000 turns)")
 plt.xlabel("Threads")
 plt.ylabel("Runtime (s)")
@@ -39,3 +40,4 @@ plt.legend()
 plt.tight_layout()
 plt.savefig("worker_lifetime_comparison.png", dpi=300)
 plt.show()
+
