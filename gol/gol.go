@@ -9,6 +9,7 @@ type Params struct {
 	Dynamic         bool
 	ChunksPerWorker int
 	UsePrecomputed  bool
+	UseOptimised    bool
 }
 
 /*
