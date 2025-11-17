@@ -56,6 +56,7 @@ func BenchmarkScalability(b *testing.B) {
 			Dynamic:         false,
 			ChunksPerWorker: 1,
 			UsePrecomputed:  true,
+			UseOptimised:    false,
 		}
 
 		start := time.Now()
@@ -138,6 +139,7 @@ func BenchmarkDynamic(b *testing.B) {
 				Dynamic:         mode.dynamic,
 				ChunksPerWorker: 1, //default
 				UsePrecomputed:  true,
+				UseOptimised:    false,
 			}
 
 			start := time.Now()
@@ -198,6 +200,7 @@ func BenchmarkGranularity(b *testing.B) {
 				Dynamic:         false, //
 				ChunksPerWorker: chunks,
 				UsePrecomputed:  true,
+				UseOptimised:    false,
 			}
 
 			start := time.Now()
@@ -268,6 +271,7 @@ func BenchmarkNeighbourCounting(b *testing.B) {
 				Dynamic:         false, // persistent model
 				ChunksPerWorker: 1,
 				UsePrecomputed:  false,
+				UseOptimised:    false,
 			}
 
 			start := time.Now()
@@ -322,6 +326,7 @@ func BenchmarkOptimized(b *testing.B) {
 			Dynamic:         false,
 			ChunksPerWorker: 1,    // default
 			UsePrecomputed:  true, // serial + baseline both use this
+			UseOptimised:    false,
 		}
 
 		start := time.Now()
@@ -353,6 +358,7 @@ func BenchmarkOptimized(b *testing.B) {
 				Dynamic:         false,
 				ChunksPerWorker: c,
 				UsePrecomputed:  false, // inline version
+				UseOptimised:    true,
 			}
 
 			start := time.Now()
