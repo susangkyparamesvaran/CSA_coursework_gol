@@ -24,6 +24,17 @@ type workerJob struct {
 	world  [][]byte
 }
 
+type workerJobInline struct {
+	startY int
+	endY   int
+	dest   [][]byte // destination buffer (subset of nextWorld)
+	world  [][]byte
+	left   []int
+	right  []int
+	up     []int
+	down   []int
+}
+
 type section struct {
 	start, end int
 }
@@ -144,10 +155,16 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	sections := assignChunks(p.ImageHeight, totalChunks)
 
 	jobChan := make(chan workerJob)
+	jobChanInline := make(chan workerJobInline)
 	resultChan := make(chan int, len(sections))
 
 	for i := 0; i < p.Threads; i++ {
-		go worker(i, p, jobChan, resultChan)
+		if p.UsePrecomputed {
+			go worker(i, p, jobChan, resultChan)
+		} else {
+			go workerInline(i, p, jobChanInline, resultChan)
+		}
+
 	}
 
 	// Starting the ticker goroutine for every 2 seconds
@@ -205,6 +222,35 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	paused := false
 	quitting := false
 
+	w := p.ImageWidth
+	h := p.ImageHeight
+
+	left := make([]int, w)
+	right := make([]int, w)
+	for x := 0; x < w; x++ {
+		left[x] = x - 1
+		if left[x] < 0 {
+			left[x] = w - 1
+		}
+		right[x] = x + 1
+		if right[x] == w {
+			right[x] = 0
+		}
+	}
+
+	up := make([]int, h)
+	down := make([]int, h)
+	for y := 0; y < h; y++ {
+		up[y] = y - 1
+		if up[y] < 0 {
+			up[y] = h - 1
+		}
+		down[y] = y + 1
+		if down[y] == h {
+			down[y] = 0
+		}
+	}
+
 	// /////////////////////////////////////////////////////////////////////////
 	// MAIN LOOP
 	// /////////////////////////////////////////////////////////////////////////
@@ -247,11 +293,25 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 		// Each worker receives a chunk of rows
 		readLock(&worldMu, func() {
 			for _, s := range sections {
-				jobChan <- workerJob{
-					startY: s.start,
-					endY:   s.end,
-					world:  world,
-					dest:   newWorld[s.start:s.end],
+				if p.UsePrecomputed {
+					jobChan <- workerJob{
+						startY: s.start,
+						endY:   s.end,
+						world:  world,
+						dest:   newWorld[s.start:s.end],
+					}
+				} else {
+					jobChanInline <- workerJobInline{
+						startY: s.start,
+						endY:   s.end,
+						world:  world,
+						dest:   newWorld[s.start:s.end],
+						left:   left,
+						right:  right,
+						up:     up,
+						down:   down,
+					}
+
 				}
 			}
 		})
@@ -333,7 +393,11 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	c.events <- StateChange{getTurn(&turnMu, &turn), Quitting}
 
 	close(c.events)
-	close(jobChan)
+	if p.UsePrecomputed {
+		close(jobChan)
+	} else {
+		close(jobChanInline)
+	}
 }
 
 func distributorDynamic(p Params, c distributorChannels, keypress <-chan rune) {
@@ -462,21 +526,12 @@ func distributorDynamic(p Params, c distributorChannels, keypress <-chan rune) {
 			for _, s := range sections {
 				start, end := s.start, s.end
 				go func(start, end int) {
-					if p.UsePrecomputed {
-						calculateNextStatesPrecomputed(p,
-							world,
-							newWorld[start:end],
-							start,
-							end,
-						)
-					} else {
-						calculateNextStatesInline(p,
-							world,
-							newWorld[start:end],
-							start,
-							end,
-						)
-					}
+					calculateNextStatesPrecomputed(p,
+						world,
+						newWorld[start:end],
+						start,
+						end,
+					)
 					resultChan <- start // just signal completion
 				}(start, end)
 			}
@@ -552,9 +607,20 @@ func distributorDynamic(p Params, c distributorChannels, keypress <-chan rune) {
 // Function run by each worker goroutine, forms the worker pool
 func worker(id int, p Params, jobs <-chan workerJob, done chan<- int) {
 	for job := range jobs {
+		// old non-optimised behaviour: create fresh rows
+		next := calculateNextStatesPrecomputed(p, job.world, job.dest, job.startY, job.endY)
+		for i := range next {
+			copy(job.dest[i], next[i])
+		}
+		done <- job.startY // notify completion of this chunk
+	}
+}
+
+func workerInline(id int, p Params, jobs <-chan workerJobInline, done chan<- int) {
+	for job := range jobs {
 		if p.UseOptimised {
 			// write into dest (preallocated)
-			calculateNextStatesInline(p, job.world, job.dest, job.startY, job.endY)
+			calculateNextStatesInline(p, job.world, job.dest, job.startY, job.endY, job.left, job.right, job.up, job.down)
 		} else {
 			// old non-optimised behaviour: create fresh rows
 			next := calculateNextStatesPrecomputed(p, job.world, job.dest, job.startY, job.endY)
@@ -588,49 +654,52 @@ func calculateNextStatesPrecomputed(p Params, world [][]byte, dest [][]byte, sta
 	return newRows
 }
 
-func calculateNextStatesInline(p Params, world [][]byte, dest [][]byte, startY, endY int) [][]byte {
-	h := p.ImageHeight
+func calculateNextStatesInline(p Params, world [][]byte, dest [][]byte, startY, endY int, left, right, up, down []int) {
 	w := p.ImageWidth
 
-	for i := startY; i < endY; i++ {
-		row := world[i]
+	for y := startY; y < endY; y++ {
 
-		up := i - 1
-		if up < 0 {
-			up = h - 1
-		}
-		down := i + 1
-		if down == h {
-			down = 0
-		}
+		row := world[y]
+		rowUp := world[up[y]]
+		rowDown := world[down[y]]
 
-		upRow := world[up]
-		downRow := world[down]
+		ny := y - startY
+		dstRow := dest[ny]
 
-		for j := 0; j < w; j++ {
-			left := j - 1
-			if left < 0 {
-				left = w - 1
+		for x := 0; x < w; x++ {
+
+			lx := left[x]
+			rx := right[x]
+
+			// branchless neighbour count
+			count :=
+				int(row[lx]>>7) +
+					int(row[rx]>>7) +
+					int(rowUp[x]>>7) +
+					int(rowDown[x]>>7) +
+					int(rowUp[lx]>>7) +
+					int(rowUp[rx]>>7) +
+					int(rowDown[lx]>>7) +
+					int(rowDown[rx]>>7)
+
+			alive := row[x] >> 7
+
+			// Apply GOL rules quickly using integer operations
+			if alive == 1 {
+				if count == 2 || count == 3 {
+					dstRow[x] = 255
+				} else {
+					dstRow[x] = 0
+				}
+			} else {
+				if count == 3 {
+					dstRow[x] = 255
+				} else {
+					dstRow[x] = 0
+				}
 			}
-			right := j + 1
-			if right == w {
-				right = 0
-			}
-
-			count := 0
-			count += int(row[left] >> 7)
-			count += int(row[right] >> 7)
-			count += int(upRow[j] >> 7)
-			count += int(downRow[j] >> 7)
-			count += int(upRow[left] >> 7)
-			count += int(upRow[right] >> 7)
-			count += int(downRow[left] >> 7)
-			count += int(downRow[right] >> 7)
-
-			dest[i-startY][j] = nextCellState(row[j], count)
 		}
 	}
-	return nil
 }
 
 // Writes the current world state into a PGM output file through the I/O goroutine
