@@ -20,13 +20,8 @@ type distributorChannels struct {
 type workerJob struct {
 	startY int
 	endY   int
+	dest   [][]byte // destination buffer (subset of nextWorld)
 	world  [][]byte
-}
-
-type workerResult struct {
-	ID           int
-	startY       int
-	worldSection [][]byte
 }
 
 type section struct {
@@ -122,9 +117,13 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	c.ioFilename <- filename
 
 	// Read world into memory, builds a 2D world[][] array
+	// Allocate TWO full boards once
 	world := make([][]byte, p.ImageHeight)
+	newWorld := make([][]byte, p.ImageHeight)
+
 	for y := 0; y < p.ImageHeight; y++ {
 		world[y] = make([]byte, p.ImageWidth)
+		newWorld[y] = make([]byte, p.ImageWidth)
 		for x := 0; x < p.ImageWidth; x++ {
 			world[y][x] = <-c.ioInput
 		}
@@ -134,11 +133,18 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 	var worldMu sync.RWMutex
 	var turnMu sync.RWMutex
 
-	totalChunks := p.Threads * p.ChunksPerWorker
+	var totalChunks int
+
+	if p.ChunksPerWorker == 0 {
+		totalChunks = 1
+	} else {
+		totalChunks = p.Threads * p.ChunksPerWorker
+	}
+
 	sections := assignChunks(p.ImageHeight, totalChunks)
 
 	jobChan := make(chan workerJob)
-	resultChan := make(chan workerResult, len(sections))
+	resultChan := make(chan int, len(sections))
 
 	for i := 0; i < p.Threads; i++ {
 		go worker(i, p, jobChan, resultChan)
@@ -241,26 +247,18 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 		// Each worker receives a chunk of rows
 		readLock(&worldMu, func() {
 			for _, s := range sections {
-				jobChan <- workerJob{startY: s.start, endY: s.end, world: world}
+				jobChan <- workerJob{
+					startY: s.start,
+					endY:   s.end,
+					world:  world,
+					dest:   newWorld[s.start:s.end],
+				}
 			}
 		})
 
 		// Collecting worker results
-		results := make([]workerResult, 0, len(sections))
 		for i := 0; i < len(sections); i++ {
-			results = append(results, <-resultChan)
-		}
-
-		// Merging into the new world for the next turn
-		newWorld := make([][]byte, p.ImageHeight)
-		for i := range newWorld {
-			newWorld[i] = make([]byte, p.ImageWidth)
-		}
-
-		for _, r := range results {
-			for row := 0; row < len(r.worldSection); row++ {
-				newWorld[r.startY+row] = r.worldSection[row]
-			}
+			<-resultChan // just wait for each worker chunk
 		}
 
 		// Comparing old and new world
@@ -282,9 +280,27 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 			}
 		}
 
-		writeLock(&worldMu, func() {
-			world = newWorld
-		})
+		if p.UseOptimised {
+			// FAST: reuse buffers (swap)
+			writeLock(&worldMu, func() {
+				world, newWorld = newWorld, world
+			})
+		} else {
+			// BASELINE: reallocate newWorld every turn
+			temp := make([][]byte, p.ImageHeight)
+			for i := range temp {
+				temp[i] = make([]byte, p.ImageWidth)
+			}
+
+			// copy next state into temp
+			for y := 0; y < p.ImageHeight; y++ {
+				copy(temp[y], newWorld[y])
+			}
+
+			writeLock(&worldMu, func() {
+				world = temp
+			})
+		}
 
 		setTurn(&turnMu, &turn, getTurn(&turnMu, &turn)+1)
 
@@ -322,15 +338,17 @@ func distributor(p Params, c distributorChannels, keypress <-chan rune) {
 
 func distributorDynamic(p Params, c distributorChannels, keypress <-chan rune) {
 
-	//Load the input world
+	// Load the input world
 	filename := fmt.Sprintf("%dx%d", p.ImageWidth, p.ImageHeight)
 	c.ioCommand <- ioInput
 	c.ioFilename <- filename
 
 	// Read world into memory, builds a 2D world[][] array
 	world := make([][]byte, p.ImageHeight)
+	newWorld := make([][]byte, p.ImageHeight) // second buffer for double-buffering
 	for y := 0; y < p.ImageHeight; y++ {
 		world[y] = make([]byte, p.ImageWidth)
+		newWorld[y] = make([]byte, p.ImageWidth)
 		for x := 0; x < p.ImageWidth; x++ {
 			world[y][x] = <-c.ioInput
 		}
@@ -436,49 +454,39 @@ func distributorDynamic(p Params, c distributorChannels, keypress <-chan rune) {
 			continue
 		}
 
-		// Each worker receives a chunk of rows
-		resultChan := make(chan workerResult, len(sections))
+		// Dynamic: spawn fresh goroutines every turn,
+		// but write into preallocated newWorld instead of allocating.
+		resultChan := make(chan int, len(sections))
 
 		readLock(&worldMu, func() {
 			for _, s := range sections {
-				//spawn goroutine here
+				start, end := s.start, s.end
 				go func(start, end int) {
-					var next [][]byte
 					if p.UsePrecomputed {
-						next = calculateNextStatesPrecomputed(p, world, start, end)
+						calculateNextStatesPrecomputed(p,
+							world,
+							newWorld[start:end],
+							start,
+							end,
+						)
 					} else {
-						next = calculateNextStatesInline(p, world, start, end)
+						calculateNextStatesInline(p,
+							world,
+							newWorld[start:end],
+							start,
+							end,
+						)
 					}
-
-					sectionRows := next
-					resultChan <- workerResult{
-						startY:       start,
-						worldSection: sectionRows,
-					}
-				}(s.start, s.end)
-
+					resultChan <- start // just signal completion
+				}(start, end)
 			}
 		})
 
-		// Collecting worker results
-		results := make([]workerResult, 0, len(sections))
+		// Wait for all dynamic workers to finish
 		for i := 0; i < len(sections); i++ {
-			results = append(results, <-resultChan)
+			<-resultChan
 		}
-
 		close(resultChan)
-
-		// Merging into the new world for the next turn
-		newWorld := make([][]byte, p.ImageHeight)
-		for i := range newWorld {
-			newWorld[i] = make([]byte, p.ImageWidth)
-		}
-
-		for _, r := range results {
-			for row := 0; row < len(r.worldSection); row++ {
-				newWorld[r.startY+row] = r.worldSection[row]
-			}
-		}
 
 		// Comparing old and new world
 		flipped := make([]util.Cell, 0)
@@ -499,8 +507,9 @@ func distributorDynamic(p Params, c distributorChannels, keypress <-chan rune) {
 			}
 		}
 
+		// Swap buffers: newWorld becomes current, old world reused as next buffer
 		writeLock(&worldMu, func() {
-			world = newWorld
+			world, newWorld = newWorld, world
 		})
 
 		setTurn(&turnMu, &turn, getTurn(&turnMu, &turn)+1)
@@ -541,24 +550,24 @@ func distributorDynamic(p Params, c distributorChannels, keypress <-chan rune) {
 // /////////////////////////////////////////////////////////////////////////
 
 // Function run by each worker goroutine, forms the worker pool
-func worker(id int, p Params, jobs <-chan workerJob, results chan<- workerResult) {
+func worker(id int, p Params, jobs <-chan workerJob, done chan<- int) {
 	for job := range jobs {
-		var next [][]byte
-		if p.UsePrecomputed {
-			next = calculateNextStatesPrecomputed(p, job.world, job.startY, job.endY)
+		if p.UseOptimised {
+			// write into dest (preallocated)
+			calculateNextStatesInline(p, job.world, job.dest, job.startY, job.endY)
 		} else {
-			next = calculateNextStatesInline(p, job.world, job.startY, job.endY)
+			// old non-optimised behaviour: create fresh rows
+			next := calculateNextStatesPrecomputed(p, job.world, job.dest, job.startY, job.endY)
+			for i := range next {
+				copy(job.dest[i], next[i])
+			}
 		}
-		results <- workerResult{
-			ID:           id,
-			startY:       job.startY,
-			worldSection: next,
-		}
+		done <- job.startY // notify completion of this chunk
 	}
 }
 
 // Computes the next state of one horizontal section of GOL world
-func calculateNextStatesPrecomputed(p Params, world [][]byte, startY, endY int) [][]byte {
+func calculateNextStatesPrecomputed(p Params, world [][]byte, dest [][]byte, startY, endY int) [][]byte {
 	h := p.ImageHeight
 	w := p.ImageWidth
 
@@ -579,29 +588,26 @@ func calculateNextStatesPrecomputed(p Params, world [][]byte, startY, endY int) 
 	return newRows
 }
 
-func calculateNextStatesInline(p Params, world [][]byte, startY, endY int) [][]byte {
+func calculateNextStatesInline(p Params, world [][]byte, dest [][]byte, startY, endY int) [][]byte {
 	h := p.ImageHeight
 	w := p.ImageWidth
 
-	rows := endY - startY
-	newRows := make([][]byte, rows)
-	for i := 0; i < rows; i++ {
-		newRows[i] = make([]byte, w)
-	}
-
 	for i := startY; i < endY; i++ {
+		row := world[i]
+
+		up := i - 1
+		if up < 0 {
+			up = h - 1
+		}
+		down := i + 1
+		if down == h {
+			down = 0
+		}
+
+		upRow := world[up]
+		downRow := world[down]
+
 		for j := 0; j < w; j++ {
-
-			// Wrap-around (branchy but cheaper than %)
-			up := i - 1
-			if up < 0 {
-				up = h - 1
-			}
-			down := i + 1
-			if down == h {
-				down = 0
-			}
-
 			left := j - 1
 			if left < 0 {
 				left = w - 1
@@ -611,11 +617,6 @@ func calculateNextStatesInline(p Params, world [][]byte, startY, endY int) [][]b
 				right = 0
 			}
 
-			row := world[i]
-			upRow := world[up]
-			downRow := world[down]
-
-			// Branchless neighbour count (0 or 1 per cell)
 			count := 0
 			count += int(row[left] >> 7)
 			count += int(row[right] >> 7)
@@ -626,12 +627,10 @@ func calculateNextStatesInline(p Params, world [][]byte, startY, endY int) [][]b
 			count += int(downRow[left] >> 7)
 			count += int(downRow[right] >> 7)
 
-			// Use helper — cleaner + reduces branches
-			newRows[i-startY][j] = nextCellState(world[i][j], count)
+			dest[i-startY][j] = nextCellState(row[j], count)
 		}
 	}
-
-	return newRows
+	return nil
 }
 
 // Writes the current world state into a PGM output file through the I/O goroutine
@@ -693,4 +692,3 @@ func assignChunks(height, totalChunks int) []section {
 
 	return sections
 }
-
